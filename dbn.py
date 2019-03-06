@@ -294,9 +294,10 @@ def main():
 	# MNIST
 	from tensorflow.examples.tutorials.mnist import input_data
 	mnist = input_data.read_data_sets("MNIST_data/")
-	X_train = mnist.train
-	train_data = X_train._images
-	dataset = Dataset(train_data[:10000])	
+	train_data = mnist.train
+	X_train = train_data._images
+	y_train = None #train_data._labels
+	dataset = Dataset([X_train, y_train])	
 	# dataset = load_dataset()
 	# X_train, y_train, X_test, y_test = dataset
 	# layers = [100,100]

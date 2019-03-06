@@ -23,7 +23,7 @@ class DBN(object):
 		n_ins = 9,
 		hidden_layers_sizes = [100,100],
 		n_outs = 3,
-		rbm_epochs=10,
+		rbm_epochs=2,
 		rbm_batch_size=10,
 		dbn_epochs=30,
 		dbn_batch_size=10,
@@ -61,6 +61,76 @@ class DBN(object):
 
 		self.rbm_stack = []
 
+		self.gen_weights = []
+		self.gen_biases = []
+		self.rec_weights = []
+		self.rec_biases = []
+
+
+	# a bottom-up pass through the DBN to get the top level hidden probabilties
+	def propup_dbn(self, inputs):
+		def sample_h_given_v(v_sample, W, hbias):
+			h_prob = tf.nn.sigmoid(tf.matmul(v_sample, W) + hbias)
+			# print("h_prob.shape=", h_prob.shape)
+			berno_obj = tf.distributions.Bernoulli(probs=h_prob, dtype=tf.float32)
+			h_sample = berno_obj.sample(seed=self.tf_rng, name='h_sample')
+
+			return h_sample, h_prob
+
+		v = tf.identity(inputs)
+		h_prob = None
+
+		v_samp_layers = [v]
+		h_prob_layers = [h_prob]
+		# propup
+		for i, W in enumerate(self.rec_weights):
+			with tf.variable_scope("propup_dbn%d"%i):
+				v, h_prob = sample_h_given_v(v, W, self.rec_biases[i])
+				v_samp_layers.append(v)
+				h_prob_layers.append(h_prob)
+
+		return v_samp_layers, h_prob_layers
+
+
+	# an up-down pass through the DBN to get the reconstruction probabilties
+	def propdown_dbn(self, inputs):
+		def sample_v_given_h(h_sample, W, vbias):
+			v_prob = tf.nn.sigmoid(tf.matmul(h_sample, W) + vbias)
+			berno_obj = tf.distributions.Bernoulli(probs=v_prob, dtype=tf.float32)
+			v_sample = berno_obj.sample(seed=self.tf_rng, name='v_sample')
+
+			return v_sample, v_prob
+
+		h = tf.identity(inputs)
+		v_prob = None
+
+		h_samp_layers = [h]
+		v_prob_layers = [v_prob]
+		# propup
+		for i, W in enumerate(self.gen_weights):
+			with tf.variable_scope("propdown_dbn%d"%i):
+				h, v_prob = sample_v_given_h(h, W, self.gen_biases[i])
+				h_samp_layers.append(h)
+				v_prob_layers.append(v_prob)
+
+		return h_samp_layers, v_prob_layers
+
+
+	def update_gen_params(self, gen_samps, gen_probs, rec_samps, rec_probs):
+
+
+	def update_rec_params(self, gen_samps, gen_probs, rec_samps, rec_probs):
+
+
+	def wake_sleep(self, inputs):
+		rec_samps, rec_probs = self.propup_dbn(inputs)
+		gen_samps, gen_probs = self.propdown_dbn(rec_samps[-1])
+
+		step_gen = self.update_gen_params(gen_samps, gen_probs, rec_samps, rec_probs)
+		step_rec = self.update_rec_params(gen_samps, gen_probs, rec_samps, rec_probs)
+
+		return step_gen, step_rec
+
 
 	# Given the inputs, propagate them through the DBN and
 	# get back the reconstructed output
@@ -92,7 +162,6 @@ class DBN(object):
 		
 		return v_samples
 
-
 	def construct_rbm(self, x):
 			steps = []
 			for i in range(self.l):
@@ -107,6 +176,10 @@ class DBN(object):
 
 			return steps
 
+
+
+
+
 	def train(self):
 		x = tf.placeholder(tf.float32, shape=[None, None], name="input")
 
@@ -115,6 +188,18 @@ class DBN(object):
 		num_dbn_batches = num_train // self.dbn_batch_size
 
 		steps = self.construct_rbm(x)
+
+		def untie_weights():
+			for i, rbm in enumerate(self.rbm_stack):
+				w_gen = tf.get_variable("w_gen%d"%i, dtype=tf.float32, initializer=tf.transpose(rbm.W), trainable=True)
+				w_rec = tf.get_variable("w_rec%d"%i, dtype=tf.float32, initializer=rbm.W, trainable=True)
+				bias_gen = tf.get_variable("bias_gen_%d"%i, dtype=tf.float32, initializer=rbm.vbias, trainable=True)
+				bias_rec = tf.get_variable("bias_rec_%d"%(i+1), dtype=tf.float32, initializer=rbm.hbias, trainable=True)
+				self.gen_weights.append(w_gen)
+				self.rec_weights.append(w_rec)
+				self.gen_biases.append(bias_gen)
+				self.rec_biases.append(bias_rec)
+
 
 		# propagate the input up to the RBM which is to be trained now, 
 		# using the k RBMs below which are already trained 
@@ -154,6 +239,7 @@ class DBN(object):
 				self.rbm_stack[i].hbias = self.pre_trained_DBN["RBM%d/hbias:0"%(i+1)]
 				self.rbm_stack[i].vbias = self.pre_trained_DBN["RBM%d/vbias:0"%(i+1)]
 
+
 			### Check if learning is occuring
 			# w1 = self.pre_trained_DBN["RBM1/W:0"]
 			# # print(w2)
@@ -162,28 +248,22 @@ class DBN(object):
 			# # print(w2_ini)
 			# print(np.linalg.norm(w1-w1_ini))
 
-			# recon = self.prop_dbn(x, rbm_stack)
+			untie_weights()
+
 			print("Setting up sampler...")
 			sampler = self.sampler(x)
-			# print("Setting up recon_loss...")
-			# # recon_loss = tf.nn.l2_loss(x-recon, name="l2_recon_loss")
-			# # recon_loss = tf.losses.absolute_difference(x, recon)
-			# recon_loss = tf.reduce_mean(tf.reduce_sum((x-recon)**2, axis=0))
-			# print("Setting up optimizer...")
-			# # optimizer = tf.train.RMSPropOptimizer(self.learning_rate)
-			# print("Setting up training operation...")
-			# train_op = optimizer.minimize(recon_loss)
 
-			# print("Fine-tuning...")
-			# # Fine-tuning
-			# for epoch_no in range(self.dbn_epochs):
-			# 	print("Epoch # ", epoch_no+1)
-			# 	for batch_no in range(num_dbn_batches):
-			# 		batch_x = self.inputs.get_next_batch(self.dbn_batch_size)
-					# batch_x[batch_x<0.5] = 0.0
-					# batch_x[batch_x>=0.5] = 1.0
+			step = wake_sleep(x)
 
-					# sess.run(recon_loss, feed_dict = {x:batch_x})
+			print("Fine-tuning...")
+			for epoch_no in range(self.dbn_epochs):
+				print("Epoch # ", epoch_no+1)
+				for batch_no in range(num_dbn_batches):
+					batch_x = self.inputs.get_next_batch(self.dbn_batch_size)
+					batch_x[batch_x<0.5] = 0.0
+					batch_x[batch_x>=0.5] = 1.0
+
+					sess.run(step, feed_dict = {x:batch_x})
 
 				# # draw samples
 				# samples = sess.run(sampler, feed_dict = {x: batch_x})
@@ -193,14 +273,14 @@ class DBN(object):
 
 
 			# draw samples when training finished
-			batch_x = self.inputs.get_next_batch(self.dbn_batch_size)
-			print('Test')
-			samples = sess.run(sampler, feed_dict = {x: batch_x})
-			samples = samples.reshape([self.dbn_batch_size, 28, 28])
-			batch_x = batch_x.reshape([self.dbn_batch_size, 28, 28])
-			save_images(samples, [4, 4], os.path.join(samples_dir, 'recon.png'))
-			save_images(batch_x, [4, 4], os.path.join(samples_dir, 'orig.png'))
-			print('Saved samples.')
+			# batch_x = self.inputs.get_next_batch(self.dbn_batch_size)
+			# print('Test')
+			# samples = sess.run(sampler, feed_dict = {x: batch_x})
+			# samples = samples.reshape([self.dbn_batch_size, 28, 28])
+			# batch_x = batch_x.reshape([self.dbn_batch_size, 28, 28])
+			# save_images(samples, [4, 4], os.path.join(samples_dir, 'recon.png'))
+			# save_images(batch_x, [4, 4], os.path.join(samples_dir, 'orig.png'))
+			# print('Saved samples.')
 
 
 
@@ -216,7 +296,7 @@ def main():
 	mnist = input_data.read_data_sets("MNIST_data/")
 	X_train = mnist.train
 	train_data = X_train._images
-	dataset = Dataset(train_data)	
+	dataset = Dataset(train_data[:10000])	
 	# dataset = load_dataset()
 	# X_train, y_train, X_test, y_test = dataset
 	# layers = [100,100]
